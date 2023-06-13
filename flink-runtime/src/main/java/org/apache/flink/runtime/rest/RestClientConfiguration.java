@@ -42,11 +42,14 @@ public final class RestClientConfiguration {
 
     private final int maxContentLength;
 
+    private final boolean useJarCache;
+
     private RestClientConfiguration(
             @Nullable final SSLHandlerFactory sslHandlerFactory,
             final long connectionTimeout,
             final long idlenessTimeout,
-            final int maxContentLength) {
+            final int maxContentLength,
+            final boolean useJarCache) {
         checkArgument(
                 maxContentLength > 0,
                 "maxContentLength must be positive, was: %s",
@@ -55,6 +58,7 @@ public final class RestClientConfiguration {
         this.connectionTimeout = connectionTimeout;
         this.idlenessTimeout = idlenessTimeout;
         this.maxContentLength = maxContentLength;
+        this.useJarCache = useJarCache;
     }
 
     /**
@@ -84,6 +88,11 @@ public final class RestClientConfiguration {
      */
     public int getMaxContentLength() {
         return maxContentLength;
+    }
+
+    /** If true, use the global jar cache to upload files. */
+    public boolean useJarCache() {
+        return useJarCache;
     }
 
     /**
@@ -117,7 +126,13 @@ public final class RestClientConfiguration {
 
         int maxContentLength = config.getInteger(RestOptions.CLIENT_MAX_CONTENT_LENGTH);
 
+        final boolean useJarCache = config.getBoolean(RestOptions.USE_JAR_CACHE);
+
         return new RestClientConfiguration(
-                sslHandlerFactory, connectionTimeout, idlenessTimeout, maxContentLength);
+                sslHandlerFactory,
+                connectionTimeout,
+                idlenessTimeout,
+                maxContentLength,
+                useJarCache);
     }
 }

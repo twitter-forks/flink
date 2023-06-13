@@ -21,6 +21,7 @@ package org.apache.flink.runtime.rest.handler.job;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.JarCacheOptions;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.blob.BlobClient;
 import org.apache.flink.runtime.client.ClientUtils;
@@ -30,7 +31,9 @@ import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.rest.handler.AbstractRestHandler;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.RestHandlerException;
+import org.apache.flink.runtime.rest.handler.jarcache.JarCacheExistsHandler;
 import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
+import org.apache.flink.runtime.rest.messages.jarcache.JarID;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitRequestBody;
 import org.apache.flink.runtime.rest.messages.job.JobSubmitResponseBody;
@@ -46,6 +49,7 @@ import java.io.ObjectInputStream;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -67,6 +71,8 @@ public final class JobSubmitHandler
     private final Executor executor;
     private final Configuration configuration;
 
+    private final Path jarCacheRoot;
+
     public JobSubmitHandler(
             GatewayRetriever<? extends DispatcherGateway> leaderRetriever,
             Time timeout,
@@ -76,6 +82,11 @@ public final class JobSubmitHandler
         super(leaderRetriever, timeout, headers, JobSubmitHeaders.getInstance());
         this.executor = executor;
         this.configuration = configuration;
+        this.jarCacheRoot = new Path(configuration.get(JarCacheOptions.JAR_CACHE_ROOT));
+    }
+
+    private Path expandJarCacheKey(String jarID) {
+        return JarCacheExistsHandler.computeCachePath(jarCacheRoot, JarID.fromHexString(jarID));
     }
 
     @Override
@@ -110,7 +121,11 @@ public final class JobSubmitHandler
 
         CompletableFuture<JobGraph> jobGraphFuture = loadJobGraph(requestBody, nameToFile);
 
-        Collection<Path> jarFiles = getJarFilesToUpload(requestBody.jarFileNames, nameToFile);
+        List<Path> jarFiles = getJarFilesToUpload(requestBody.jarFileNames, nameToFile);
+        jarFiles.addAll(
+                requestBody.cachedJars.stream()
+                        .map(this::expandJarCacheKey)
+                        .collect(Collectors.toList()));
 
         Collection<Tuple2<String, Path>> artifacts =
                 getArtifactFilesToUpload(requestBody.artifactFileNames, nameToFile);
@@ -153,10 +168,10 @@ public final class JobSubmitHandler
                 executor);
     }
 
-    private static Collection<Path> getJarFilesToUpload(
+    private static List<Path> getJarFilesToUpload(
             Collection<String> jarFileNames, Map<String, Path> nameToFileMap)
             throws MissingFileException {
-        Collection<Path> jarFiles = new ArrayList<>(jarFileNames.size());
+        List<Path> jarFiles = new ArrayList<>(jarFileNames.size());
         for (String jarFileName : jarFileNames) {
             Path jarFile = getPathAndAssertUpload(jarFileName, FILE_TYPE_JAR, nameToFileMap);
             jarFiles.add(new Path(jarFile.toString()));

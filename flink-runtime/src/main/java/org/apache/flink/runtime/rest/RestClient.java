@@ -57,12 +57,14 @@ import org.apache.flink.shaded.netty4.io.netty.channel.Channel;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelFuture;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelHandler;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelHandlerContext;
-import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInitializer;
 import org.apache.flink.shaded.netty4.io.netty.channel.ChannelOption;
 import org.apache.flink.shaded.netty4.io.netty.channel.DefaultSelectStrategyFactory;
 import org.apache.flink.shaded.netty4.io.netty.channel.SelectStrategyFactory;
 import org.apache.flink.shaded.netty4.io.netty.channel.SimpleChannelInboundHandler;
 import org.apache.flink.shaded.netty4.io.netty.channel.nio.NioEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.pool.AbstractChannelPoolMap;
+import org.apache.flink.shaded.netty4.io.netty.channel.pool.ChannelPoolHandler;
+import org.apache.flink.shaded.netty4.io.netty.channel.pool.SimpleChannelPool;
 import org.apache.flink.shaded.netty4.io.netty.channel.socket.SocketChannel;
 import org.apache.flink.shaded.netty4.io.netty.channel.socket.nio.NioSocketChannel;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.TooLongFrameException;
@@ -86,6 +88,7 @@ import org.apache.flink.shaded.netty4.io.netty.handler.ssl.SslHandler;
 import org.apache.flink.shaded.netty4.io.netty.handler.stream.ChunkedWriteHandler;
 import org.apache.flink.shaded.netty4.io.netty.handler.timeout.IdleStateEvent;
 import org.apache.flink.shaded.netty4.io.netty.handler.timeout.IdleStateHandler;
+import org.apache.flink.shaded.netty4.io.netty.util.concurrent.Future;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -96,6 +99,7 @@ import java.io.InputStream;
 import java.io.StringWriter;
 import java.net.URL;
 import java.nio.channels.spi.SelectorProvider;
+import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -127,6 +131,8 @@ public class RestClient implements AutoCloseableAsync {
 
     private final Bootstrap bootstrap;
 
+    private final AbstractChannelPoolMap<InetSocketAddress, SimpleChannelPool> channelPoolMap;
+
     private final CompletableFuture<Void> terminationFuture;
 
     private final AtomicBoolean isRunning = new AtomicBoolean(true);
@@ -142,6 +148,72 @@ public class RestClient implements AutoCloseableAsync {
 
     private final List<OutboundChannelHandlerFactory> outboundChannelHandlerFactories;
 
+    private final class RestPoolHandler implements ChannelPoolHandler {
+        private final SSLHandlerFactory sslHandlerFactory;
+        private final Configuration configuration;
+        private final RestClientConfiguration restConfiguration;
+
+        RestPoolHandler(
+                SSLHandlerFactory sslHandlerFactory,
+                Configuration configuration,
+                RestClientConfiguration restConfiguration) {
+            this.sslHandlerFactory = sslHandlerFactory;
+            this.configuration = configuration;
+            this.restConfiguration = restConfiguration;
+        }
+
+        @Override
+        public void channelReleased(Channel channel) throws Exception {
+            channel.pipeline().get(ClientHandler.class).reset();
+        }
+
+        @Override
+        public void channelAcquired(Channel channel) throws Exception {}
+
+        @Override
+        public void channelCreated(Channel channel) throws Exception {
+            SocketChannel socketChannel = (SocketChannel) channel;
+            try {
+                // SSL should be the first handler in the pipeline
+                if (sslHandlerFactory != null) {
+                    SslHandler nettySSLHandler =
+                            host == null
+                                    ? sslHandlerFactory.createNettySSLHandler(
+                                            socketChannel.alloc())
+                                    : sslHandlerFactory.createNettySSLHandler(
+                                            socketChannel.alloc(), host, port);                                     
+                }
+
+                socketChannel
+                        .pipeline()
+                        .addLast(new HttpClientCodec())
+                        .addLast(new HttpObjectAggregator(restConfiguration.getMaxContentLength()));
+
+                for (OutboundChannelHandlerFactory factory : outboundChannelHandlerFactories) {
+                    Optional<ChannelHandler> channelHandler = factory.createHandler(configuration);
+                    if (channelHandler.isPresent()) {
+                        socketChannel.pipeline().addLast(channelHandler.get());
+                    }
+                }
+
+                socketChannel
+                        .pipeline()
+                        .addLast(new ChunkedWriteHandler()) // required
+                        // for multipart-requests
+                        .addLast(
+                                new IdleStateHandler(
+                                        restConfiguration.getIdlenessTimeout(),
+                                        restConfiguration.getIdlenessTimeout(),
+                                        restConfiguration.getIdlenessTimeout(),
+                                        TimeUnit.MILLISECONDS))
+                        .addLast(new ClientHandler());
+            } catch (Throwable t) {
+                t.printStackTrace();
+                ExceptionUtils.rethrow(t);
+            }
+        }
+    }
+
     /**
      * Creates a new RestClient for the provided root URL. If the protocol of the URL is "https",
      * then SSL is automatically enabled for the REST client.
@@ -156,6 +228,7 @@ public class RestClient implements AutoCloseableAsync {
         }
         return new RestClient(configuration, executor, rootUrl.getHost(), rootUrl.getPort());
     }
+
 
     public RestClient(Configuration configuration, Executor executor)
             throws ConfigurationException {
@@ -213,55 +286,7 @@ public class RestClient implements AutoCloseableAsync {
         final RestClientConfiguration restConfiguration =
                 RestClientConfiguration.fromConfiguration(configuration);
         final SSLHandlerFactory sslHandlerFactory = restConfiguration.getSslHandlerFactory();
-        ChannelInitializer<SocketChannel> initializer =
-                new ChannelInitializer<SocketChannel>() {
-                    @Override
-                    protected void initChannel(SocketChannel socketChannel) {
-                        try {
-                            // SSL should be the first handler in the pipeline
-                            if (sslHandlerFactory != null) {
-                                SslHandler nettySSLHandler =
-                                        host == null
-                                                ? sslHandlerFactory.createNettySSLHandler(
-                                                        socketChannel.alloc())
-                                                : sslHandlerFactory.createNettySSLHandler(
-                                                        socketChannel.alloc(), host, port);
-                                socketChannel.pipeline().addLast("ssl", nettySSLHandler);
-                            }
-                            socketChannel
-                                    .pipeline()
-                                    .addLast(new HttpClientCodec())
-                                    .addLast(
-                                            new HttpObjectAggregator(
-                                                    restConfiguration.getMaxContentLength()));
-
-                            for (OutboundChannelHandlerFactory factory :
-                                    outboundChannelHandlerFactories) {
-                                Optional<ChannelHandler> channelHandler =
-                                        factory.createHandler(configuration);
-                                if (channelHandler.isPresent()) {
-                                    socketChannel.pipeline().addLast(channelHandler.get());
-                                }
-                            }
-
-                            socketChannel
-                                    .pipeline()
-                                    .addLast(new ChunkedWriteHandler()) // required for
-                                    // multipart-requests
-                                    .addLast(
-                                            new IdleStateHandler(
-                                                    restConfiguration.getIdlenessTimeout(),
-                                                    restConfiguration.getIdlenessTimeout(),
-                                                    restConfiguration.getIdlenessTimeout(),
-                                                    TimeUnit.MILLISECONDS))
-                                    .addLast(new ClientHandler());
-                        } catch (Throwable t) {
-                            t.printStackTrace();
-                            ExceptionUtils.rethrow(t);
-                        }
-                    }
-                };
-
+     
         // No NioEventLoopGroup constructor available that allows passing nThreads, threadFactory,
         // and selectStrategyFactory without also passing a SelectorProvider, so mimicking its
         // default value seen in other constructors
@@ -278,8 +303,18 @@ public class RestClient implements AutoCloseableAsync {
                         ChannelOption.CONNECT_TIMEOUT_MILLIS,
                         Math.toIntExact(restConfiguration.getConnectionTimeout()))
                 .group(group)
-                .channel(NioSocketChannel.class)
-                .handler(initializer);
+                .channel(NioSocketChannel.class);
+
+        channelPoolMap =
+                new AbstractChannelPoolMap<InetSocketAddress, SimpleChannelPool>() {
+                    @Override
+                    protected SimpleChannelPool newPool(InetSocketAddress inetSocketAddress) {
+                        return new SimpleChannelPool(
+                                bootstrap.remoteAddress(inetSocketAddress),
+                                new RestPoolHandler(
+                                        sslHandlerFactory, configuration, restConfiguration));
+                    }
+                };
 
         LOG.debug("Rest client endpoint started.");
     }
@@ -313,6 +348,8 @@ public class RestClient implements AutoCloseableAsync {
     private CompletableFuture<Void> shutdownInternally(Time timeout) {
         if (isRunning.compareAndSet(true, false)) {
             LOG.debug("Shutting down rest endpoint.");
+
+            channelPoolMap.iterator().forEachRemaining(ent -> ent.getValue().close());
 
             if (bootstrap != null) {
                 if (bootstrap.config().group() != null) {
@@ -512,7 +549,7 @@ public class RestClient implements AutoCloseableAsync {
 
             HttpHeaders headers = httpRequest.headers();
             headers.set(HttpHeaderNames.HOST, targetAddress)
-                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE)
+                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE)
                     .add(HttpHeaderNames.CONTENT_LENGTH, jsonPayload.capacity())
                     .add(HttpHeaderNames.CONTENT_TYPE, RestConstants.REST_CONTENT_TYPE);
             customHeaders.forEach(ch -> headers.set(ch.getName(), ch.getValue()));
@@ -524,7 +561,7 @@ public class RestClient implements AutoCloseableAsync {
 
             HttpHeaders headers = httpRequest.headers();
             headers.set(HttpHeaderNames.HOST, targetAddress)
-                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
             customHeaders.forEach(ch -> headers.set(ch.getName(), ch.getValue()));
 
             // takes care of splitting the request into multiple parts
@@ -575,17 +612,19 @@ public class RestClient implements AutoCloseableAsync {
             return FutureUtils.completedExceptionally(
                     new IllegalStateException("RestClient is already closed"));
         }
+        final SimpleChannelPool channelPool =
+                channelPoolMap.get(new InetSocketAddress(targetAddress, targetPort));
+        final Future<Channel> connectFuture = channelPool.acquire();
 
         final CompletableFuture<Channel> channelFuture = new CompletableFuture<>();
         responseChannelFutures.add(channelFuture);
 
         final ChannelFuture connectFuture = bootstrap.connect(targetAddress, targetPort);
         connectFuture.addListener(
-                (ChannelFuture future) -> {
+                (future) -> {
                     responseChannelFutures.remove(channelFuture);
-
                     if (future.isSuccess()) {
-                        channelFuture.complete(future.channel());
+                        channelFuture.complete((Channel) future.getNow());
                     } else {
                         channelFuture.completeExceptionally(future.cause());
                     }
@@ -615,9 +654,10 @@ public class RestClient implements AutoCloseableAsync {
                                                         "Could not write request.", e));
                             } finally {
                                 if (!success) {
-                                    channel.close();
+                                    channelPool.release(channel);
                                 }
                             }
+                            future.whenComplete((resp, throwable) -> channelPool.release(channel));
 
                             return future;
                         },
@@ -707,7 +747,11 @@ public class RestClient implements AutoCloseableAsync {
 
     private static class ClientHandler extends SimpleChannelInboundHandler<Object> {
 
-        private final CompletableFuture<JsonResponse> jsonFuture = new CompletableFuture<>();
+        private CompletableFuture<JsonResponse> jsonFuture = new CompletableFuture<>();
+
+        void reset() {
+            jsonFuture = new CompletableFuture<>();
+        }
 
         CompletableFuture<JsonResponse> getJsonFuture() {
             return jsonFuture;
@@ -740,7 +784,6 @@ public class RestClient implements AutoCloseableAsync {
                                     HttpResponseStatus.INTERNAL_SERVER_ERROR));
                 }
             }
-            ctx.close();
         }
 
         @Override

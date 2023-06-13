@@ -79,6 +79,11 @@ import org.apache.flink.runtime.rest.messages.dataset.ClusterDataSetDeleteTrigge
 import org.apache.flink.runtime.rest.messages.dataset.ClusterDataSetDeleteTriggerMessageParameters;
 import org.apache.flink.runtime.rest.messages.dataset.ClusterDataSetEntry;
 import org.apache.flink.runtime.rest.messages.dataset.ClusterDataSetListHeaders;
+import org.apache.flink.runtime.rest.messages.jarcache.JarCacheExistsHeaders;
+import org.apache.flink.runtime.rest.messages.jarcache.JarCacheExistsMessageParameters;
+import org.apache.flink.runtime.rest.messages.jarcache.JarCacheUploadHeaders;
+import org.apache.flink.runtime.rest.messages.jarcache.JarCacheUploadMessageParameters;
+import org.apache.flink.runtime.rest.messages.jarcache.JarID;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsInfo;
 import org.apache.flink.runtime.rest.messages.job.JobExecutionResultHeaders;
@@ -120,6 +125,9 @@ import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 import org.apache.flink.util.function.CheckedSupplier;
 
+import org.apache.flink.shaded.guava30.com.google.common.collect.Sets;
+import org.apache.flink.shaded.guava30.com.google.common.hash.HashCode;
+import org.apache.flink.shaded.guava30.com.google.common.hash.Hashing;
 import org.apache.flink.shaded.netty4.io.netty.channel.ConnectTimeoutException;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
@@ -129,6 +137,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.ObjectOutputStream;
 import java.net.MalformedURLException;
@@ -150,6 +159,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -171,6 +181,9 @@ public class RestClusterClient<T> implements ClusterClient<T> {
     private final ExecutorService executorService =
             Executors.newFixedThreadPool(
                     4, new ExecutorThreadFactory("Flink-RestClusterClient-IO"));
+
+    private final ExecutorService jarCacheExecutorService =
+            Executors.newFixedThreadPool(16, new ExecutorThreadFactory("Flink-JarCache-IO"));
 
     private final WaitStrategy waitStrategy;
 
@@ -326,6 +339,163 @@ public class RestClusterClient<T> implements ClusterClient<T> {
         return retry(operation, unknownJobStateRetryable);
     }
 
+    private static class JarCacheCheckResult {
+        public final boolean exists;
+        public final JarID jarID;
+        public final java.nio.file.Path localFile;
+
+        JarCacheCheckResult(boolean exists, JarID jarID, java.nio.file.Path localFile) {
+            this.exists = exists;
+            this.jarID = jarID;
+            this.localFile = localFile;
+        }
+    }
+
+    private class CacheJar implements Runnable {
+
+        private final Set<JarID> seenJars;
+        private final Path localJar;
+        private final AtomicInteger cacheHits;
+        private final AtomicInteger cacheMisses;
+        private final AtomicInteger duplicatesSkipped;
+
+        public CompletableFuture<String> uploadFuture;
+
+        CacheJar(
+                Set<JarID> seenJars,
+                Path localJar,
+                AtomicInteger cacheHits,
+                AtomicInteger cacheMisses,
+                AtomicInteger duplicatesSkipped) {
+            this.seenJars = seenJars;
+            this.localJar = localJar;
+            this.cacheHits = cacheHits;
+            this.cacheMisses = cacheMisses;
+            this.duplicatesSkipped = duplicatesSkipped;
+            this.uploadFuture = new CompletableFuture<>();
+        }
+
+        private JarCacheCheckResult checkJarCache() {
+            try {
+                final File jarFile = Paths.get(localJar.toUri()).toFile();
+                final HashCode fileHash =
+                        org.apache.flink.shaded.guava30.com.google.common.io.Files.asByteSource(
+                                        jarFile)
+                                .hash(Hashing.sha256());
+                final JarCacheExistsMessageParameters params =
+                        new JarCacheExistsMessageParameters();
+                final JarID jarId = JarID.fromHashBytes(fileHash.asBytes());
+                params.jarIDPathParameter.resolve(jarId);
+                return sendRetriableRequest(
+                                JarCacheExistsHeaders.getInstance(),
+                                params,
+                                EmptyRequestBody.getInstance(),
+                                isConnectionProblemOrServiceUnavailable())
+                        .thenApply(
+                                resp ->
+                                        new JarCacheCheckResult(
+                                                resp.exists, jarId, jarFile.toPath()))
+                        .get();
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        }
+
+        private CompletableFuture<EmptyResponseBody> uploadNewJar(final JarID jarID) {
+            LOG.debug("Starting upload for {}", localJar.toUri());
+            final JarCacheUploadMessageParameters params = new JarCacheUploadMessageParameters();
+            final FileUpload upload =
+                    new FileUpload(Paths.get(localJar.toUri()), RestConstants.CONTENT_TYPE_JAR);
+            params.jarIDPathParameter.resolve(jarID);
+            return sendRetriableRequest(
+                    JarCacheUploadHeaders.getInstance(),
+                    params,
+                    EmptyRequestBody.getInstance(),
+                    Collections.singleton(upload),
+                    isConnectionProblemOrServiceUnavailable(),
+                    (receiver, error) -> {
+                        if (error != null) {
+                            LOG.warn(
+                                    "Attempt to upload {} to {} has failed",
+                                    localJar.toUri(),
+                                    receiver,
+                                    error);
+                        } else {
+                            LOG.debug(
+                                    "Successfully uploaded {} to '{}'.",
+                                    localJar.toUri(),
+                                    receiver);
+                        }
+                    });
+        }
+
+        @Override
+        public void run() {
+            try {
+                JarCacheCheckResult checkResult = checkJarCache();
+                if (seenJars.add(checkResult.jarID)) {
+                    if (checkResult.exists) {
+                        cacheHits.incrementAndGet();
+                    } else {
+                        cacheMisses.incrementAndGet();
+                        uploadNewJar(checkResult.jarID).get();
+                    }
+                } else {
+                    duplicatesSkipped.incrementAndGet();
+                }
+
+                uploadFuture.complete(checkResult.jarID.toHexString());
+            } catch (Exception ex) {
+                uploadFuture.completeExceptionally(ex);
+            }
+        }
+    }
+
+    private CompletableFuture<Tuple2<List<String>, List<Path>>> uploadJarsToCache(
+            @Nonnull JobGraph jobGraph) {
+        if (restClusterClientConfiguration.getRestClientConfiguration().useJarCache()) {
+            final Set<JarID> seenJars = Sets.newConcurrentHashSet();
+            final List<CompletableFuture<String>> cachedJars = new ArrayList<>();
+            AtomicInteger cacheHits = new AtomicInteger();
+            AtomicInteger cacheMisses = new AtomicInteger();
+            AtomicInteger duplicatesSkipped = new AtomicInteger();
+
+            LOG.info("Uploading {} jars to the jar cache", jobGraph.getUserJars().size());
+            for (Path jar : jobGraph.getUserJars()) {
+                CacheJar cj =
+                        new CacheJar(seenJars, jar, cacheHits, cacheMisses, duplicatesSkipped);
+                jarCacheExecutorService.submit(cj);
+                cachedJars.add(cj.uploadFuture);
+            }
+
+            return CompletableFuture.allOf(cachedJars.toArray(new CompletableFuture[0]))
+                    .thenApply(
+                            ignored -> {
+                                List<String> cachedJarIds =
+                                        cachedJars.stream()
+                                                .map(
+                                                        v -> {
+                                                            try {
+                                                                return v.get();
+                                                            } catch (Exception e) {
+                                                                throw new RuntimeException(e);
+                                                            }
+                                                        })
+                                                .collect(Collectors.toList());
+                                LOG.info(
+                                        "Uploaded {} jars, {} cached, {} new, {} duplicates skipped",
+                                        cachedJarIds.size(),
+                                        cacheHits.get(),
+                                        cacheMisses.get(),
+                                        duplicatesSkipped.get());
+                                return Tuple2.of(cachedJarIds, Collections.emptyList());
+                            });
+        } else {
+            return CompletableFuture.completedFuture(
+                    Tuple2.of(Collections.emptyList(), jobGraph.getUserJars()));
+        }
+    }
+
     @Override
     public CompletableFuture<JobID> submitJob(@Nonnull JobGraph jobGraph) {
         CompletableFuture<java.nio.file.Path> jobGraphFileFuture =
@@ -348,9 +518,13 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                         },
                         executorService);
 
+        CompletableFuture<Tuple2<List<String>, List<Path>>> cachedFiles =
+                uploadJarsToCache(jobGraph);
+
         CompletableFuture<Tuple2<JobSubmitRequestBody, Collection<FileUpload>>> requestFuture =
-                jobGraphFileFuture.thenApply(
-                        jobGraphFile -> {
+                jobGraphFileFuture.thenCombine(
+                        cachedFiles,
+                        (jobGraphFile, paths) -> {
                             List<String> jarFileNames = new ArrayList<>(8);
                             List<JobSubmitRequestBody.DistributedCacheFile> artifactFileNames =
                                     new ArrayList<>(8);
@@ -360,7 +534,7 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                                     new FileUpload(
                                             jobGraphFile, RestConstants.CONTENT_TYPE_BINARY));
 
-                            for (Path jar : jobGraph.getUserJars()) {
+                            for (Path jar : paths.f1) {
                                 jarFileNames.add(jar.getName());
                                 filesToUpload.add(
                                         new FileUpload(
@@ -398,7 +572,8 @@ public class RestClusterClient<T> implements ClusterClient<T> {
                                     new JobSubmitRequestBody(
                                             jobGraphFile.getFileName().toString(),
                                             jarFileNames,
-                                            artifactFileNames);
+                                            artifactFileNames,
+                                            paths.f0);
 
                             return Tuple2.of(
                                     requestBody, Collections.unmodifiableCollection(filesToUpload));
