@@ -25,18 +25,30 @@ import org.apache.flink.runtime.blob.BlobClient;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 import org.apache.flink.util.function.SupplierWithException;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /** Contains utility methods for clients. */
 public enum ClientUtils {
     ;
+
+    private static final int NUM_PARALLEL_BLOB_UPLOADS = 16;
+
+    private static final ExecutorService blobUploadService =
+            Executors.newFixedThreadPool(
+                    NUM_PARALLEL_BLOB_UPLOADS, new ExecutorThreadFactory("Flink-BlobClient-IO"));
 
     /**
      * Extracts all files required for the execution from the given {@link JobGraph} and uploads
@@ -80,7 +92,7 @@ public enum ClientUtils {
             throws FlinkException {
         if (!userJars.isEmpty() || !userArtifacts.isEmpty()) {
             try (BlobClient client = clientSupplier.get()) {
-                uploadAndSetUserJars(jobGraph, userJars, client);
+                uploadAndSetUserJars(jobGraph, userJars, clientSupplier);
                 uploadAndSetUserArtifacts(jobGraph, userArtifacts, client);
             } catch (IOException ioe) {
                 throw new FlinkException("Could not upload job files.", ioe);
@@ -99,7 +111,9 @@ public enum ClientUtils {
      * @throws IOException if the upload fails
      */
     private static void uploadAndSetUserJars(
-            JobGraph jobGraph, Collection<Path> userJars, BlobClient blobClient)
+            JobGraph jobGraph,
+            Collection<Path> userJars,
+            SupplierWithException<BlobClient, IOException> blobClient)
             throws IOException {
         Collection<PermanentBlobKey> blobKeys =
                 uploadUserJars(jobGraph.getJobID(), userJars, blobClient);
@@ -107,13 +121,61 @@ public enum ClientUtils {
     }
 
     private static Collection<PermanentBlobKey> uploadUserJars(
-            JobID jobId, Collection<Path> userJars, BlobClient blobClient) throws IOException {
-        Collection<PermanentBlobKey> blobKeys = new ArrayList<>(userJars.size());
+            JobID jobId,
+            Collection<Path> userJars,
+            SupplierWithException<BlobClient, IOException> blobClientSupplier)
+            throws IOException {
+
+        final List<Future<?>> uploadFutures = new ArrayList<>(NUM_PARALLEL_BLOB_UPLOADS);
+        final List<CompletableFuture<PermanentBlobKey>> uploadedBlobKeyFutures =
+                new ArrayList<>(userJars.size());
+        final ConcurrentLinkedQueue<Tuple2<Path, CompletableFuture<PermanentBlobKey>>> toUpload =
+                new ConcurrentLinkedQueue<>();
+
         for (Path jar : userJars) {
-            final PermanentBlobKey blobKey = blobClient.uploadFile(jobId, jar);
-            blobKeys.add(blobKey);
+            final CompletableFuture<PermanentBlobKey> fut = new CompletableFuture<>();
+            uploadedBlobKeyFutures.add(fut);
+            toUpload.add(Tuple2.of(jar, fut));
         }
-        return blobKeys;
+
+        for (int id = 0; id < NUM_PARALLEL_BLOB_UPLOADS; id++) {
+            uploadFutures.add(
+                    blobUploadService.submit(
+                            () -> {
+                                try (BlobClient blobClient = blobClientSupplier.get()) {
+                                    Tuple2<Path, CompletableFuture<PermanentBlobKey>> next;
+                                    while ((next = toUpload.poll()) != null) {
+                                        Path jar = next.f0;
+                                        CompletableFuture<PermanentBlobKey> fut = next.f1;
+                                        try {
+                                            fut.complete(blobClient.uploadFile(jobId, jar));
+                                        } catch (IOException ex) {
+                                            fut.completeExceptionally(ex);
+                                        }
+                                    }
+                                }
+                                return null;
+                            }));
+        }
+
+        for (Future<?> uploadFuture : uploadFutures) {
+            try {
+                uploadFuture.get();
+            } catch (Exception ex) {
+                throw new IOException(ex);
+            }
+        }
+
+        final List<PermanentBlobKey> uploadedBlobKeys =
+                new ArrayList<>(uploadedBlobKeyFutures.size());
+        for (CompletableFuture<PermanentBlobKey> fut : uploadedBlobKeyFutures) {
+            try {
+                uploadedBlobKeys.add(fut.get());
+            } catch (Exception ex) {
+                throw new IOException(ex);
+            }
+        }
+        return uploadedBlobKeys;
     }
 
     private static void setUserJarBlobKeys(
