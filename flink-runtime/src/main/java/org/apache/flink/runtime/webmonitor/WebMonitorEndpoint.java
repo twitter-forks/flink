@@ -23,7 +23,9 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.JarCacheOptions;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.blob.TransientBlobService;
 import org.apache.flink.runtime.leaderelection.LeaderContender;
 import org.apache.flink.runtime.leaderelection.LeaderElectionService;
@@ -44,6 +46,8 @@ import org.apache.flink.runtime.rest.handler.cluster.ShutdownHandler;
 import org.apache.flink.runtime.rest.handler.dataset.ClusterDataSetDeleteHandlers;
 import org.apache.flink.runtime.rest.handler.dataset.ClusterDataSetListHandler;
 import org.apache.flink.runtime.rest.handler.job.GeneratedLogUrlHandler;
+import org.apache.flink.runtime.rest.handler.jarcache.JarCacheExistsHandler;
+import org.apache.flink.runtime.rest.handler.jarcache.JarCacheUploadHandler;
 import org.apache.flink.runtime.rest.handler.job.JobAccumulatorsHandler;
 import org.apache.flink.runtime.rest.handler.job.JobCancellationHandler;
 import org.apache.flink.runtime.rest.handler.job.JobConfigHandler;
@@ -127,6 +131,8 @@ import org.apache.flink.runtime.rest.messages.cluster.JobManagerLogListHeaders;
 import org.apache.flink.runtime.rest.messages.cluster.JobManagerStdoutFileHeader;
 import org.apache.flink.runtime.rest.messages.cluster.JobManagerThreadDumpHeaders;
 import org.apache.flink.runtime.rest.messages.cluster.ShutdownHeaders;
+import org.apache.flink.runtime.rest.messages.jarcache.JarCacheExistsHeaders;
+import org.apache.flink.runtime.rest.messages.jarcache.JarCacheUploadHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobDetailsHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobManagerJobConfigurationHeaders;
 import org.apache.flink.runtime.rest.messages.job.JobManagerJobEnvironmentHeaders;
@@ -986,6 +992,24 @@ public class WebMonitorEndpoint<T extends RestfulGateway> extends RestServerEndp
                         TaskManagerThreadDumpHeaders.getInstance(),
                         taskManagerThreadDumpFileHandler));
 
+        final Path jarCacheRoot =
+                clusterConfiguration
+                        .getOptional(JarCacheOptions.JAR_CACHE_ROOT)
+                        .map(Path::new)
+                        .orElse(null);
+
+        if (jarCacheRoot != null) {
+            final JarCacheExistsHandler jarCacheExistsHandler =
+                    new JarCacheExistsHandler(
+                            leaderRetriever, timeout, responseHeaders, jarCacheRoot);
+
+            final JarCacheUploadHandler jarCacheUploadHandler =
+                    new JarCacheUploadHandler(
+                            leaderRetriever, timeout, responseHeaders, jarCacheRoot);
+
+            handlers.add(Tuple2.of(JarCacheExistsHeaders.getInstance(), jarCacheExistsHandler));
+            handlers.add(Tuple2.of(JarCacheUploadHeaders.getInstance(), jarCacheUploadHandler));
+        }
         handlers.stream()
                 .map(tuple -> tuple.f1)
                 .filter(handler -> handler instanceof JsonArchivist)

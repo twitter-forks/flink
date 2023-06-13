@@ -40,6 +40,7 @@ public final class JobSubmitRequestBody implements RequestBody {
 
     public static final String FIELD_NAME_JOB_GRAPH = "jobGraphFileName";
     private static final String FIELD_NAME_JOB_JARS = "jobJarFileNames";
+    private static final String FIELD_NAME_CACHED_JOB_JARS = "jobJarCachedPaths";
     private static final String FIELD_NAME_JOB_ARTIFACTS = "jobArtifactFileNames";
 
     @JsonProperty(FIELD_NAME_JOB_GRAPH)
@@ -54,12 +55,25 @@ public final class JobSubmitRequestBody implements RequestBody {
     @Nonnull
     public final Collection<DistributedCacheFile> artifactFileNames;
 
-    @JsonCreator
+    @JsonProperty(FIELD_NAME_CACHED_JOB_JARS)
+    @Nonnull
+    public final Collection<String> cachedJars;
+
     public JobSubmitRequestBody(
             @Nullable @JsonProperty(FIELD_NAME_JOB_GRAPH) String jobGraphFileName,
             @Nullable @JsonProperty(FIELD_NAME_JOB_JARS) Collection<String> jarFileNames,
             @Nullable @JsonProperty(FIELD_NAME_JOB_ARTIFACTS)
                     Collection<DistributedCacheFile> artifactFileNames) {
+        this(jobGraphFileName, jarFileNames, artifactFileNames, null);
+    }
+
+    @JsonCreator
+    public JobSubmitRequestBody(
+            @Nullable @JsonProperty(FIELD_NAME_JOB_GRAPH) String jobGraphFileName,
+            @Nullable @JsonProperty(FIELD_NAME_JOB_JARS) Collection<String> jarFileNames,
+            @Nullable @JsonProperty(FIELD_NAME_JOB_ARTIFACTS)
+                    Collection<DistributedCacheFile> artifactFileNames,
+            @Nullable @JsonProperty(FIELD_NAME_CACHED_JOB_JARS) Collection<String> cachedJars) {
         this.jobGraphFileName = jobGraphFileName;
         if (jarFileNames == null) {
             this.jarFileNames = Collections.emptyList();
@@ -70,6 +84,11 @@ public final class JobSubmitRequestBody implements RequestBody {
             this.artifactFileNames = Collections.emptyList();
         } else {
             this.artifactFileNames = artifactFileNames;
+        }
+        if (cachedJars == null) {
+            this.cachedJars = Collections.emptyList();
+        } else {
+            this.cachedJars = cachedJars;
         }
     }
 
@@ -84,12 +103,13 @@ public final class JobSubmitRequestBody implements RequestBody {
         JobSubmitRequestBody that = (JobSubmitRequestBody) o;
         return Objects.equals(jobGraphFileName, that.jobGraphFileName)
                 && Objects.equals(jarFileNames, that.jarFileNames)
-                && Objects.equals(artifactFileNames, that.artifactFileNames);
+                && Objects.equals(artifactFileNames, that.artifactFileNames)
+                && Objects.equals(cachedJars, that.cachedJars);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(jobGraphFileName, jarFileNames, artifactFileNames);
+        return Objects.hash(jobGraphFileName, jarFileNames, artifactFileNames, cachedJars);
     }
 
     @Override
@@ -102,6 +122,8 @@ public final class JobSubmitRequestBody implements RequestBody {
                 + jarFileNames
                 + ", artifactFileNames="
                 + artifactFileNames
+                + ", cachedJars="
+                + cachedJars
                 + '}';
     }
 

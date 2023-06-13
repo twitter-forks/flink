@@ -251,4 +251,7 @@ public class RestOptions {
                     .defaultValue(Duration.ofMinutes(5))
                     .withDescription(
                             "Maximum duration that the result of an async operation is stored. Once elapsed the result of the operation can no longer be retrieved.");
+
+    public static final ConfigOption<Boolean> USE_JAR_CACHE =
+            key("rest.client.use-jar-cache").booleanType().defaultValue(true);
 }
