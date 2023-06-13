@@ -47,9 +47,9 @@ import org.apache.flink.runtime.rest.handler.cluster.JobManagerThreadDumpHandler
 import org.apache.flink.runtime.rest.handler.cluster.ShutdownHandler;
 import org.apache.flink.runtime.rest.handler.dataset.ClusterDataSetDeleteHandlers;
 import org.apache.flink.runtime.rest.handler.dataset.ClusterDataSetListHandler;
-import org.apache.flink.runtime.rest.handler.job.GeneratedLogUrlHandler;
 import org.apache.flink.runtime.rest.handler.jarcache.JarCacheExistsHandler;
 import org.apache.flink.runtime.rest.handler.jarcache.JarCacheUploadHandler;
+import org.apache.flink.runtime.rest.handler.job.GeneratedLogUrlHandler;
 import org.apache.flink.runtime.rest.handler.job.JobAccumulatorsHandler;
 import org.apache.flink.runtime.rest.handler.job.JobCancellationHandler;
 import org.apache.flink.runtime.rest.handler.job.JobClientHeartbeatHandler;
