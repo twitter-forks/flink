@@ -22,8 +22,12 @@ import org.apache.flink.runtime.rest.HttpMethodWrapper;
 import org.apache.flink.runtime.rest.handler.jarcache.JarCacheExistsHandler;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.MessageHeaders;
+import org.apache.flink.runtime.rest.versioning.RuntimeRestAPIVersion;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
+
+import java.util.Collection;
+import java.util.Collections;
 
 /** Headers for the {@link JarCacheExistsHandler}. */
 public class JarCacheExistsHeaders
@@ -68,6 +72,11 @@ public class JarCacheExistsHeaders
     @Override
     public JarCacheExistsMessageParameters getUnresolvedMessageParameters() {
         return new JarCacheExistsMessageParameters();
+    }
+
+    @Override
+    public Collection<RuntimeRestAPIVersion> getSupportedAPIVersions() {
+        return Collections.singleton(RuntimeRestAPIVersion.V1);
     }
 
     private JarCacheExistsHeaders() {}
