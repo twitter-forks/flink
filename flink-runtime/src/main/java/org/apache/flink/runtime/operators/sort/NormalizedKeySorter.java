@@ -296,7 +296,15 @@ public final class NormalizedKeySorter<T> implements InMemorySorter<T> {
         try {
             this.serializer.serialize(record, this.recordCollector);
         } catch (EOFException e) {
+            LOG.warn("RecordCollector out of memory");
             return false;
+        } catch (Exception e) {
+            if (e.getCause().getClass().equals(EOFException.class)) {
+                LOG.warn("RecordCollector out of memory");
+                return false;
+            } else {
+                throw e;
+            }
         }
 
         final long newOffset = this.recordCollector.getCurrentOffset();
