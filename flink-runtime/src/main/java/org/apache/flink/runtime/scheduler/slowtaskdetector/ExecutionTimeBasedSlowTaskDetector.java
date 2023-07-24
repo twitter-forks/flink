@@ -32,8 +32,15 @@ import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.util.IterableUtils;
 
+import org.apache.commons.lang3.tuple.Pair;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,6 +63,9 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
     private final double baselineMultiplier;
 
     private ScheduledFuture<?> scheduledDetectionFuture;
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(ExecutionTimeBasedSlowTaskDetector.class);
 
     public ExecutionTimeBasedSlowTaskDetector(Configuration configuration) {
         this.checkIntervalMillis =
@@ -131,16 +141,24 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
         final List<ExecutionJobVertex> jobVerticesToCheck = getJobVerticesToCheck(executionGraph);
 
         for (ExecutionJobVertex ejv : jobVerticesToCheck) {
-            final long baseline = getBaseline(ejv, currentTimeMillis);
+            //            final long baseline = getBaseline(ejv, currentTimeMillis);
 
             for (ExecutionVertex ev : ejv.getTaskVertices()) {
                 if (ev.getExecutionState().isTerminal()) {
                     continue;
                 }
 
+                //                final List<ExecutionAttemptID> slowExecutions =
+                //                        findExecutionsExceedingBaseline(
+                //                                ev.getCurrentExecutions(), baseline,
+                // currentTimeMillis);
                 final List<ExecutionAttemptID> slowExecutions =
-                        findExecutionsExceedingBaseline(
-                                ev.getCurrentExecutions(), baseline, currentTimeMillis);
+                        findSlowExecutionsByThroughput(
+                                ev.getCurrentExecutions(), currentTimeMillis);
+                LOG.info(
+                        "Slow executions for job vertex {} - {}",
+                        ev.getJobVertex().getName(),
+                        slowExecutions);
 
                 if (!slowExecutions.isEmpty()) {
                     slowTasks.put(ev.getID(), slowExecutions);
@@ -155,7 +173,7 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
         return IterableUtils.toStream(executionGraph.getVerticesTopologically())
                 .filter(ExecutionJobVertex::isInitialized)
                 .filter(ejv -> ejv.getAggregateState() != ExecutionState.FINISHED)
-                .filter(ejv -> getFinishedRatio(ejv) >= baselineRatio)
+                //                .filter(ejv -> getFinishedRatio(ejv) >= baselineRatio)
                 .collect(Collectors.toList());
     }
 
@@ -201,6 +219,50 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
                         .collect(Collectors.toList());
 
         return firstFinishedExecutions.get(baselineExecutionCount / 2);
+    }
+
+    private List<ExecutionAttemptID> findSlowExecutionsByThroughput(
+            Collection<Execution> executions, long currentTimeMillis) {
+        List<Pair<Execution, Double>> sortedByThroughput =
+                executions.stream()
+                        .filter(
+                                e ->
+                                        !e.getState().isTerminal()
+                                                && e.getState() != ExecutionState.CANCELING)
+                        .filter(
+                                e ->
+                                        getExecutionTime(e, currentTimeMillis)
+                                                >= baselineLowerBoundMillis)
+                        .filter(e -> e.getIOMetrics().getNumRecordsIn() > 0)
+                        .map(e -> Pair.of(e, computeThroughput(e)))
+                        .sorted(Comparator.comparingDouble(e -> e.getRight()))
+                        .collect(Collectors.toList());
+        LOG.debug("Executions sorted by throughput- {}", sortedByThroughput);
+        if (sortedByThroughput.isEmpty()) {
+            return Collections.emptyList();
+        } else {
+            Pair<Execution, Double> maxThroughputExecutionAndTime =
+                    sortedByThroughput.get(sortedByThroughput.size() - 1);
+            LOG.info("Fastest execution - {}", maxThroughputExecutionAndTime);
+            double baselineThroughput =
+                    maxThroughputExecutionAndTime.getRight() * baselineMultiplier;
+            List<ExecutionAttemptID> slowTasks = new ArrayList<>();
+            int index = 0;
+            while (index < sortedByThroughput.size()
+                    && sortedByThroughput.get(index).getRight() < baselineThroughput) {
+                slowTasks.add(sortedByThroughput.get(index).getLeft().getAttemptId());
+                index++;
+            }
+            return slowTasks;
+        }
+    }
+
+    private double computeThroughput(Execution e) {
+        if (e.getIOMetrics().getNumRecordsIn() == 0) {
+            return 0;
+        } else {
+            return e.getIOMetrics().getNumBytesOut() * 1.0 / e.getIOMetrics().getNumBytesIn();
+        }
     }
 
     private List<ExecutionAttemptID> findExecutionsExceedingBaseline(
