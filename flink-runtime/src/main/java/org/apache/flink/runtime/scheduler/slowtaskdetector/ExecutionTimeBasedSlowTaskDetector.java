@@ -234,7 +234,8 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
                                         getExecutionTime(e, currentTimeMillis)
                                                 >= baselineLowerBoundMillis)
                         .filter(e -> e.getIOMetrics().getNumRecordsIn() > 0)
-                        .map(e -> Pair.of(e, computeThroughput(e)))
+                        .filter(e -> e.getIOMetrics().getNumRecordsOut() > 0)
+                        .map(e -> Pair.of(e, computeThroughput(e, currentTimeMillis)))
                         .sorted(Comparator.comparingDouble(e -> e.getRight()))
                         .collect(Collectors.toList());
         LOG.debug("Executions sorted by throughput- {}", sortedByThroughput);
@@ -257,11 +258,14 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
         }
     }
 
-    private double computeThroughput(Execution e) {
-        if (e.getIOMetrics().getNumRecordsIn() == 0) {
+    private double computeThroughput(Execution e, long currentTimeMills) {
+        if (e.getIOMetrics().getNumBytesIn() == 0) {
             return 0;
         } else {
-            return e.getIOMetrics().getNumBytesOut() * 1.0 / e.getIOMetrics().getNumBytesIn();
+            return e.getIOMetrics().getNumBytesOut()
+                    * 1.0
+                    / e.getIOMetrics().getNumBytesIn()
+                    / getExecutionTime(e, currentTimeMills);
         }
     }
 
