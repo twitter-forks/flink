@@ -134,6 +134,7 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
     @VisibleForTesting
     Map<ExecutionVertexID, Collection<ExecutionAttemptID>> findSlowTasks(
             final ExecutionGraph executionGraph) {
+        LOG.debug("Finding slow tasks");
         final long currentTimeMillis = System.currentTimeMillis();
 
         final Map<ExecutionVertexID, Collection<ExecutionAttemptID>> slowTasks = new HashMap<>();
@@ -142,9 +143,15 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
 
         for (ExecutionJobVertex ejv : jobVerticesToCheck) {
             //            final long baseline = getBaseline(ejv, currentTimeMillis);
-
+            LOG.debug(
+                    "Checking job vertex - {} with task vertices - {}",
+                    ejv.getName(),
+                    Arrays.stream(ejv.getTaskVertices())
+                            .map(tv -> tv.getTaskNameWithSubtaskIndex())
+                            .collect(Collectors.toList()));
             for (ExecutionVertex ev : ejv.getTaskVertices()) {
                 if (ev.getExecutionState().isTerminal()) {
+                    LOG.debug("Skipping terminal job vertex - {}", ev);
                     continue;
                 }
 
@@ -170,6 +177,24 @@ public class ExecutionTimeBasedSlowTaskDetector implements SlowTaskDetector {
     }
 
     private List<ExecutionJobVertex> getJobVerticesToCheck(final ExecutionGraph executionGraph) {
+        LOG.debug(
+                "Job vertices in topological order - {}",
+                IterableUtils.toStream(executionGraph.getVerticesTopologically())
+                        .map(v -> v.getName())
+                        .collect(Collectors.toList()));
+        LOG.debug(
+                "Initialized job vertices - {}",
+                IterableUtils.toStream(executionGraph.getVerticesTopologically())
+                        .filter(ExecutionJobVertex::isInitialized)
+                        .map(v -> v.getName())
+                        .collect(Collectors.toList()));
+        LOG.debug(
+                "Running job vertices - {}",
+                IterableUtils.toStream(executionGraph.getVerticesTopologically())
+                        .filter(ExecutionJobVertex::isInitialized)
+                        .filter(ejv -> ejv.getAggregateState() != ExecutionState.FINISHED)
+                        .map(v -> v.getName())
+                        .collect(Collectors.toList()));
         return IterableUtils.toStream(executionGraph.getVerticesTopologically())
                 .filter(ExecutionJobVertex::isInitialized)
                 .filter(ejv -> ejv.getAggregateState() != ExecutionState.FINISHED)
