@@ -95,8 +95,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringWriter;
-import java.nio.channels.spi.SelectorProvider;
 import java.net.InetSocketAddress;
+import java.nio.channels.spi.SelectorProvider;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -210,7 +210,7 @@ public class RestClient implements AutoCloseableAsync {
         this(configuration, executor, DefaultSelectStrategyFactory.INSTANCE);
     }
 
-     @VisibleForTesting
+    @VisibleForTesting
     RestClient(
             Configuration configuration,
             Executor executor,
@@ -241,7 +241,6 @@ public class RestClient implements AutoCloseableAsync {
         final RestClientConfiguration restConfiguration =
                 RestClientConfiguration.fromConfiguration(configuration);
         final SSLHandlerFactory sslHandlerFactory = restConfiguration.getSslHandlerFactory();
-
 
         // No NioEventLoopGroup constructor available that allows passing nThreads, threadFactory,
         // and selectStrategyFactory without also passing a SelectorProvider, so mimicking its
@@ -492,10 +491,10 @@ public class RestClient implements AutoCloseableAsync {
 
             httpRequest
                     .headers()
-                    .set(HttpHeaders.Names.HOST, targetAddress)
-                    .set(HttpHeaders.Names.CONNECTION, HttpHeaderValues.KEEP_ALIVE)
-                    .add(HttpHeaders.Names.CONTENT_LENGTH, jsonPayload.capacity())
-                    .add(HttpHeaders.Names.CONTENT_TYPE, RestConstants.REST_CONTENT_TYPE);
+                    .set(HttpHeaderNames.HOST, targetAddress)
+                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE)
+                    .add(HttpHeaderNames.CONTENT_LENGTH, jsonPayload.capacity())
+                    .add(HttpHeaderNames.CONTENT_TYPE, RestConstants.REST_CONTENT_TYPE);
 
             return new SimpleRequest(httpRequest);
         } else {
@@ -504,8 +503,8 @@ public class RestClient implements AutoCloseableAsync {
 
             httpRequest
                     .headers()
-                    .set(HttpHeaders.Names.HOST, targetAddress)
-                    .set(HttpHeaders.Names.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                    .set(HttpHeaderNames.HOST, targetAddress)
+                    .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
 
             // takes care of splitting the request into multiple parts
             HttpPostRequestEncoder bodyRequestEncoder;
@@ -562,7 +561,6 @@ public class RestClient implements AutoCloseableAsync {
         final CompletableFuture<Channel> channelFuture = new CompletableFuture<>();
         responseChannelFutures.add(channelFuture);
 
-        final ChannelFuture connectFuture = bootstrap.connect(targetAddress, targetPort);
         connectFuture.addListener(
                 (future) -> {
                     responseChannelFutures.remove(channelFuture);

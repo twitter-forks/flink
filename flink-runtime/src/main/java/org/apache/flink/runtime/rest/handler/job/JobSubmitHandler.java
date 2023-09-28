@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
@@ -71,7 +72,7 @@ public final class JobSubmitHandler
     private final Executor executor;
     private final Configuration configuration;
 
-    private final Path jarCacheRoot;
+    private final Optional<Path> jarCacheRoot;
 
     public JobSubmitHandler(
             GatewayRetriever<? extends DispatcherGateway> leaderRetriever,
@@ -82,11 +83,21 @@ public final class JobSubmitHandler
         super(leaderRetriever, timeout, headers, JobSubmitHeaders.getInstance());
         this.executor = executor;
         this.configuration = configuration;
-        this.jarCacheRoot = new Path(configuration.get(JarCacheOptions.JAR_CACHE_ROOT));
+        if (configuration.get(JarCacheOptions.JAR_CACHE_ROOT) != null) {
+            this.jarCacheRoot =
+                    Optional.of(new Path(configuration.get(JarCacheOptions.JAR_CACHE_ROOT)));
+        } else {
+            this.jarCacheRoot = Optional.empty();
+        }
     }
 
-    private Path expandJarCacheKey(String jarID) {
-        return JarCacheExistsHandler.computeCachePath(jarCacheRoot, JarID.fromHexString(jarID));
+    private Optional<Path> expandJarCacheKey(String jarID) {
+        if (jarCacheRoot.isPresent()) {
+            return Optional.of(
+                    JarCacheExistsHandler.computeCachePath(
+                            jarCacheRoot.get(), JarID.fromHexString(jarID)));
+        }
+        return Optional.empty();
     }
 
     @Override
@@ -125,6 +136,8 @@ public final class JobSubmitHandler
         jarFiles.addAll(
                 requestBody.cachedJars.stream()
                         .map(this::expandJarCacheKey)
+                        .filter(cachePath -> cachePath.isPresent())
+                        .map(cachePath -> cachePath.get())
                         .collect(Collectors.toList()));
 
         Collection<Tuple2<String, Path>> artifacts =

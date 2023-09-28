@@ -33,11 +33,11 @@ import org.apache.flink.shaded.netty4.io.netty.handler.ssl.SslContextBuilder;
 import org.apache.flink.shaded.netty4.io.netty.handler.ssl.SslHandler;
 import org.apache.flink.shaded.netty4.io.netty.handler.ssl.SslProvider;
 
+import org.hamcrest.MatcherAssert;
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.hamcrest.MatcherAssert;
-import org.hamcrest.Matchers;
 
 import javax.net.ssl.SSLServerSocket;
 
@@ -485,7 +485,7 @@ public class SSLUtilsTest {
 
         MatcherAssert.assertThat(calls.size(), Matchers.greaterThan(0));
         for (TestSslContextSupplier.Call call : calls) {
-            assertEquals(call.clientMode, expectedClientMode);
+            assertThat(expectedClientMode).isEqualTo(call.clientMode);
         }
     }
 
