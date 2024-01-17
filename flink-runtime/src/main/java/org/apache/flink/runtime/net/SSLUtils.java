@@ -27,7 +27,7 @@ import org.apache.flink.runtime.io.network.netty.SSLHandlerFactory;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.StringUtils;
 
-import org.apache.flink.shaded.guava30.com.google.common.base.Suppliers;
+import org.apache.flink.shaded.guava31.com.google.common.base.Suppliers;
 import org.apache.flink.shaded.netty4.io.netty.handler.ssl.ClientAuth;
 import org.apache.flink.shaded.netty4.io.netty.handler.ssl.JdkSslContext;
 import org.apache.flink.shaded.netty4.io.netty.handler.ssl.OpenSsl;
@@ -389,12 +389,11 @@ public class SSLUtils {
         Optional<TrustManagerFactory> tmf = getTrustManagerFactory(config, true);
         tmf.map(sslContextBuilder::trustManager);
 
-
         SslContext context =
                 sslContextBuilder
                         .sslProvider(provider)
                         .protocols(sslProtocols)
-                        .ciphers(ciphers)                        
+                        .ciphers(ciphers)
                         .clientAuth(clientAuth)
                         .sessionCacheSize(sessionCacheSize)
                         .sessionTimeout(sessionTimeoutMs / 1000)
@@ -494,10 +493,7 @@ public class SSLUtils {
                                     .clientAuth(clientAuth));
         }
 
-        SslContext sslContext =
-                sslContextBuilder
-                        .sslProvider(provider)       
-                        .build();
+        SslContext sslContext = sslContextBuilder.sslProvider(provider).build();
         return Suppliers.ofInstance(sslContext);
     }
 

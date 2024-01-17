@@ -35,10 +35,10 @@ import org.apache.flink.runtime.webmonitor.RestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 import org.apache.flink.util.IOUtils;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
-import org.apache.flink.shaded.guava30.com.google.common.hash.HashCode;
-import org.apache.flink.shaded.guava30.com.google.common.hash.Hashing;
-import org.apache.flink.shaded.guava30.com.google.common.hash.HashingOutputStream;
+import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava31.com.google.common.hash.HashCode;
+import org.apache.flink.shaded.guava31.com.google.common.hash.Hashing;
+import org.apache.flink.shaded.guava31.com.google.common.hash.HashingOutputStream;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.annotation.Nonnull;

@@ -97,9 +97,9 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringWriter;
+import java.net.InetSocketAddress;
 import java.net.URL;
 import java.nio.channels.spi.SelectorProvider;
-import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -152,14 +152,20 @@ public class RestClient implements AutoCloseableAsync {
         private final SSLHandlerFactory sslHandlerFactory;
         private final Configuration configuration;
         private final RestClientConfiguration restConfiguration;
+        private final String host;
+        private final int port;
 
         RestPoolHandler(
                 SSLHandlerFactory sslHandlerFactory,
                 Configuration configuration,
-                RestClientConfiguration restConfiguration) {
+                RestClientConfiguration restConfiguration,
+                String host,
+                int port) {
             this.sslHandlerFactory = sslHandlerFactory;
             this.configuration = configuration;
             this.restConfiguration = restConfiguration;
+            this.host = host;
+            this.port = port;
         }
 
         @Override
@@ -178,10 +184,9 @@ public class RestClient implements AutoCloseableAsync {
                 if (sslHandlerFactory != null) {
                     SslHandler nettySSLHandler =
                             host == null
-                                    ? sslHandlerFactory.createNettySSLHandler(
-                                            socketChannel.alloc())
+                                    ? sslHandlerFactory.createNettySSLHandler(socketChannel.alloc())
                                     : sslHandlerFactory.createNettySSLHandler(
-                                            socketChannel.alloc(), host, port);                                     
+                                            socketChannel.alloc(), host, port);
                 }
 
                 socketChannel
@@ -228,7 +233,6 @@ public class RestClient implements AutoCloseableAsync {
         }
         return new RestClient(configuration, executor, rootUrl.getHost(), rootUrl.getPort());
     }
-
 
     public RestClient(Configuration configuration, Executor executor)
             throws ConfigurationException {
@@ -286,7 +290,7 @@ public class RestClient implements AutoCloseableAsync {
         final RestClientConfiguration restConfiguration =
                 RestClientConfiguration.fromConfiguration(configuration);
         final SSLHandlerFactory sslHandlerFactory = restConfiguration.getSslHandlerFactory();
-     
+
         // No NioEventLoopGroup constructor available that allows passing nThreads, threadFactory,
         // and selectStrategyFactory without also passing a SelectorProvider, so mimicking its
         // default value seen in other constructors
@@ -312,7 +316,11 @@ public class RestClient implements AutoCloseableAsync {
                         return new SimpleChannelPool(
                                 bootstrap.remoteAddress(inetSocketAddress),
                                 new RestPoolHandler(
-                                        sslHandlerFactory, configuration, restConfiguration));
+                                        sslHandlerFactory,
+                                        configuration,
+                                        restConfiguration,
+                                        host,
+                                        port));
                     }
                 };
 
@@ -619,7 +627,6 @@ public class RestClient implements AutoCloseableAsync {
         final CompletableFuture<Channel> channelFuture = new CompletableFuture<>();
         responseChannelFutures.add(channelFuture);
 
-        final ChannelFuture connectFuture = bootstrap.connect(targetAddress, targetPort);
         connectFuture.addListener(
                 (future) -> {
                     responseChannelFutures.remove(channelFuture);

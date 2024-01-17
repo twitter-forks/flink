@@ -125,9 +125,9 @@ import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 import org.apache.flink.util.function.CheckedSupplier;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Sets;
-import org.apache.flink.shaded.guava30.com.google.common.hash.HashCode;
-import org.apache.flink.shaded.guava30.com.google.common.hash.Hashing;
+import org.apache.flink.shaded.guava31.com.google.common.collect.Sets;
+import org.apache.flink.shaded.guava31.com.google.common.hash.HashCode;
+import org.apache.flink.shaded.guava31.com.google.common.hash.Hashing;
 import org.apache.flink.shaded.netty4.io.netty.channel.ConnectTimeoutException;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
@@ -379,7 +379,7 @@ public class RestClusterClient<T> implements ClusterClient<T> {
             try {
                 final File jarFile = Paths.get(localJar.toUri()).toFile();
                 final HashCode fileHash =
-                        org.apache.flink.shaded.guava30.com.google.common.io.Files.asByteSource(
+                        org.apache.flink.shaded.guava31.com.google.common.io.Files.asByteSource(
                                         jarFile)
                                 .hash(Hashing.sha256());
                 final JarCacheExistsMessageParameters params =
