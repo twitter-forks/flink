@@ -187,6 +187,7 @@ public class RestClient implements AutoCloseableAsync {
                                     ? sslHandlerFactory.createNettySSLHandler(socketChannel.alloc())
                                     : sslHandlerFactory.createNettySSLHandler(
                                             socketChannel.alloc(), host, port);
+                    socketChannel.pipeline().addLast("ssl", nettySSLHandler);                                    
                 }
 
                 socketChannel
